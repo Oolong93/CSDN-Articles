@@ -1,0 +1,420 @@
+> 本文由 [简悦 SimpRead](http://ksria.com/simpread/) 转码， 原文地址 [blog.csdn.net](https://blog.csdn.net/wuzhongqiang/article/details/108471107?ops_request_misc=%257B%2522request%255Fid%2522%253A%2522170452758816800226541633%2522%252C%2522scm%2522%253A%252220140713.130102334.pc%255Fblog.%2522%257D&request_id=170452758816800226541633&biz_id=0&utm_medium=distribute.pc_search_result.none-task-blog-2~blog~first_rank_ecpm_v1~times_rank-29-108471107-null-null.nonecase&utm_term=AI%E4%B8%8A%E6%8E%A8%E8%8D%90&spm=1018.2226.3001.4450)
+
+### 1. 写在前面
+
+今天是梯度提升树 GBDT 的理论学习和细节补充， 之前整理过 [XGBOOST](https://so.csdn.net/so/search?q=XGBOOST&spm=1001.2101.3001.7020) 和 Lightgbm， 在那里面提到了 GBDT， 但是只是简单的一过， 并没有关注太多 GBDT 的细节， 所以这次借着整理推荐系统里面的 GBDT+LR 模型的机会， 重新过了一遍 GBDT 和 LR 的基础知识， 确实发现忽略了很多知识， 而 GBDT 和逻辑回归模型都是作为面试考核的大点， 所以有必要细一些了。
+
+关于[逻辑回归](https://so.csdn.net/so/search?q=%E9%80%BB%E8%BE%91%E5%9B%9E%E5%BD%92&spm=1001.2101.3001.7020)的细节， 在[这篇文章中](https://blog.csdn.net/wuzhongqiang/article/details/108456051)进行了补充， 今天的重点是 GBDT， GBDT 全称梯度提升决策树，在传统机器学习算法里面是对真实分布拟合的最好的几种算法之一，在前几年深度学习还没有大行其道之前，gbdt 在各种竞赛是大放异彩。原因大概有几个，一是效果确实挺不错。二是即可以用于分类也可以用于回归。三是可以筛选特征。这三点实在是太吸引人了，导致在面试的时候大家也非常喜欢问这个算法， 下面就从算法的原理与公式推导， 算法如何选择特征， 如何进行回归和分类等几方面进行一个整理。
+
+PS： 这个算法非常重要， 现在机器学习算法最常用的 XGBOOST， [Lightgbm](https://so.csdn.net/so/search?q=Lightgbm&spm=1001.2101.3001.7020)， catboost 这几大巨头算法都是基于这个算法的基础上进行发展起来的， 面试里面一般会问到的关于这个算法的问题， 大致有下面几个， 由于我也刚开始接触细节部分， 先整理其中的几个， 后面再慢慢加：
+
+1.  gbdt 算法的流程？
+2.  gbdt 如何选择特征？
+3.  gbdt 如何构建特征？
+4.  gbdt 如何用于分类
+5.  gbdt 通过什么方式减少误差 ？
+6.  gbdt 的效果相比于传统的 LR，SVM 效果为什么好一些 ？
+7.  gbdt 如何加速训练？
+8.  gbdt 的参数有哪些，如何调参 ？
+9.  gbdt 实战当中遇到的一些问题 ？
+10.  gbdt 的优缺点 ？
+
+**大纲如下**：
+
+*   GBDT？ 我们先从提升树 (BDT) 开始吧
+*   梯度提升之 GBDT 的原理（上面问题的 1， 2）
+*   从梯度下降的角度再看 GBDT，会有一个新的感受（GBDT 的残差为啥可以用负梯度近似？）
+*   GBDT 如何构建特征（3）
+*   GBDT 如何进行分类（4）
+*   为何 GBDT 受人青睐（6， 10）
+
+Ok let’s go!
+
+### 2. GBDT? 先从提升树开始
+
+在介绍 GBDT 之前， 先简单的介绍一下 BDT, 也就是 Boosting Decision Tree， 这是以 CART 决策树为基学习器的集成学习方法， 关于集成学习， 这里就不过多赘述了， 可以参考[白话机器学习算法理论 + 实战之 AdaBoost 算法](https://blog.csdn.net/wuzhongqiang/article/details/104245152)。 提升树模型可以表示为决策树的加法模型：
+
+f M (x) = ∑ m = 1 M T ( x ; Θ m ) f_{M}(x)=\sum_{m=1}^{M} T\left(x ; \Theta_{m}\right) fM​(x)=m=1∑M​T(x;Θm​)  
+其中， T ( x ; Θ m ) T(x;\Theta_m) T(x;Θm​) 表示决策树； Θ m \Theta_m Θm​为决策树的参数， M M M 表示树的个数， 即 M 棵树的结果相加。
+
+提升树采用的是前向分布算法， 首先确定初始提升树 f 0 (x) = 0 f_0(x)=0 f0​(x)=0， 第 m m m 步的模型是：  
+f m (x) = f m − 1 ( x ) + T ( x ; Θ m ) f_{m}(x)=f_{m-1}(x)+T\left(x ; \Theta_{m}\right) fm​(x)=fm−1​(x)+T(x;Θm​)  
+通过经验风险极小化确定下一棵树的参数（让残差尽可能的小找到最优划分点）：  
+Θ ^ m = arg ⁡ min ⁡ Θ m ∑ i = 1 N L ( y i , f m − 1 ( x i ) + T ( x i ; Θ m ) ) \hat{\Theta}_{m}=\arg \min _{\Theta_{m}} \sum_{i=1}^{N} L\left(y_{i}, f_{m-1}\left(x_{i}\right)+T\left(x_{i} ; \Theta_{m}\right)\right) Θ^m​=argΘm​min​i=1∑N​L(yi​,fm−1​(xi​)+T(xi​;Θm​))
+
+这里的 L ( ) L() L() 是损失函数, 回归算法选择的损失函数一般是均方差 (最小二乘) 或者绝对值误差; 而在分类算法中一般的损失函数选择对数函数来表示。 这是李航老师《统计学习方法》里面的原内容， 也是对提升树比较好的总结。
+
+如果对上面的公式一脸懵逼， 那么我们拿一个图来看一下 BDT 的一个学习流程， 然后再回顾一下上面的这些公式， 就会有一种豁然开朗的感觉 (初极狭， 才通人， 复行数十步， 豁然开朗哈哈）
+
+![](https://img-blog.csdnimg.cn/2020090816441490.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3d1emhvbmdxaWFuZw==,size_1,color_FFFFFF,t_70#pic_center)  
+根据这个图先梳理一遍 BDT 的流程：
+
+> boosting 方法之前已经提到过， 是由多个弱学习器进行组合得到的一个强学习器， 而每个弱学习器之间是相互关联的， AdaBoost 是 boosting 家族的一员， 它与 BDT 不同， AdaBoost 中弱学习器之间的关联关系是前一轮学习器表现不行的样本， 而 GDT 中弱学习器之间的关联是残差。
+
+给我一些训练样本， 我们先训练第一个弱学习器， BDT 里面的话就是决策树了， 关于决策树的问题这里依然不多说， 可以参考[白话机器学习算法理论 + 实战之决策树](https://blog.csdn.net/wuzhongqiang/article/details/104154654), 训练完了第一个学习器， 就可以对样本进行一个预测， 此时会得到一个与真实标签的一个残差， 那么就可以用这个残差来训练后面的学习器， 也就是第二个分类器关注于与前面学习器与真实标签的差距， 这样依次类推， 最后会得到 n 个弱分类器。 那么我这 n 个分类器进行加和， 就得到了最终的学习器。最后就是用这个东西进行预测。 关于这个拟合残差的这部分， 在[白话机器学习算法理论 + 实战番外篇之 Xgboost](https://blog.csdn.net/wuzhongqiang/article/details/104854890) 做了比较详细的赘述， 这里就不再重复了， 因为这篇文章内容也很多， 不要再冗余了哈哈。
+
+根据上面的这个简单过程， 我们再来理解一下《统计学习方法》里面的公式， **提升树实际上是加法模型和前向分布算法**， 表示为：  
+![](https://img-blog.csdnimg.cn/20200908165557793.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3d1emhvbmdxaWFuZw==,size_1,color_FFFFFF,t_70#pic_center)  
+在前向分布算法的第 m m m 步时， 给定当前的模型 f m − 1 (x) f_{m-1}(x) fm−1​(x), 求解：  
+![](https://img-blog.csdnimg.cn/20200908165714583.png#pic_center)  
+这样就可以得到第 m m m 棵决策树 T ( x , Θ m ) T(x, \Theta_m) T(x,Θm​)。只不过不同问题的提升树， 损失函数不同。如果我们解决的一个回归问题， 我们用平方损失函数的话， 第 m m m 次迭代的损失函数为：  
+L ( y , f m − 1 (x) + T ( x , Θ m ) ) = ( y − f m − 1 ( x ) − T ( x , Θ m ) ) 2 = ( r − T ( x , Θ m ) ) 2 \mathrm{L}\left(\mathrm{y}, f_{m-1}(x)+T\left(x, \Theta_{m}\right)\right)=\left(y-f_{m-1}(x)-T\left(x, \Theta_{m}\right)\right)^{2} = \left(r-T\left(x, \Theta_{m}\right)\right)^{2} L(y,fm−1​(x)+T(x,Θm​))=(y−fm−1​(x)−T(x,Θm​))2=(r−T(x,Θm​))2  
+这里的 r r r 就是残差， 所以第 m m m 棵决策树 T ( x , Θ m ) T(x, \Theta_m) T(x,Θm​) 是对该残差的拟合。 但是要注意的是提升树算法中的基学习器是 CART 树的回归树。 关于 CART 树， 可以参考决策树那篇文章。
+
+这就是 BDT 算法的一般流程， 简单总结就是初始化一棵树， 计算残差， 根据残差拟合一棵树， 然后更新。下面就是完整的提升树算法：
+
+![](https://img-blog.csdnimg.cn/20200908170811880.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3d1emhvbmdxaWFuZw==,size_1,color_FFFFFF,t_70#pic_center)  
+关于回归问题的提升树算法， 李航老师书上有个比较好的例子， 由于比较细致， 这里只摘一部分， 但是在摘之前， 需要先整理一下 CART 回归树的生成方式， 因为之前整理决策树全是分类任务， 而**这次要整理的 BDT 或者是下面的 GBDT 都是用 CART 回归树作为的基分类器**， 所以有必要了解一下 CART 回归树的生成过程， 这也对应着面试过程中的一个问题， 如何选择特征？ 这个细节其实就是 CART 回归树的生成过程， 因为 CART 回归树生成的过程就是一个特征选择的过程。（这里 PS 一下：gbdt 的弱分类器默认选择的是 CART TREE。其实也可以选择其他弱分类器的，选择的前提是低方差和高偏差， Boosting 就是干降低偏差这个事情的。框架服从 boosting 框架即可）
+
+一棵回归树对应着特征空间的一个划分以及在划分单元上的输出值。 假设已将输入空间划分为 M 个单元 R 1 , R 2 , . . . , R M R_1, R_2, ..., R_M R1​,R2​,...,RM​, 并且在每个单元 R m R_m Rm​上有一个固定的输出值 c m c_m cm​, 于是回归树模型表示为：
+
+f (x) = ∑ m = 1 M c m I ( x ∈ R m ) f(x)=\sum_{m=1}^{M} c_{m} I\left(x \in R_{m}\right) f(x)=m=1∑M​cm​I(x∈Rm​)
+
+当输入空间的划分确定时， 可以用平方误差 ∑ x i ∈ R m ( y i − f ( x i ) ) 2 \sum_{x_{i} \in R_{m}}\left(y_{i}-f\left(x_{i}\right)\right)^{2} ∑xi​∈Rm​​(yi​−f(xi​))2 来表示回归树训练数据的误差， 用平方误差最小的准则求解每个单元上的最优输出值。 单元 R m R_m Rm​上的 c m c_m cm​的最优输出值 c ^ m \hat c_m c^m​是 R m R_m Rm​上的所有输入实例 x i x_i xi​对应的 y i y_i yi​的均值， 即  
+c ^ m = ave ⁡ ( y i ∣ x i ∈ R m ) \hat{c}_{m}=\operatorname{ave}\left(y_{i} \mid x_{i} \in R_{m}\right) c^m​=ave(yi​∣xi​∈Rm​)  
+现在问题是如何对输入空间进行划分？ 这里才用的启发方法， 选择第 j j j 个变量（特征） x (j) x^{(j)} x(j) 和它的取值 s s s, 作为切分变量和切分点， 并定义两个区域：
+
+R 1 ( j , s ) = { x ∣ x (j) ⩽ s }  和  R 2 ( j , s ) = { x ∣ x ( j ) > s } R_{1}(j, s)=\left\{x \mid x^{(j)} \leqslant s\right\} \quad \text { 和 } \quad R_{2}(j, s)=\left\{x \mid x^{(j)}>s\right\} R1​(j,s)={x∣x(j)⩽s} 和 R2​(j,s)={x∣x(j)>s}
+
+然后寻找最优切分点 j j j 和最优切分点 s s s。 这个是关键， 如何寻找？
+
+具体的求解  
+min ⁡ j , s [ min ⁡ c 1 ∑ x i ∈ R 1 ( j , s ) ( y i − c 1 ) 2 + min ⁡ c 2 ∑ x i ∈ R 2 ( j , s ) ( y i − c 2 ) 2 ] \min _{j, s}\left[\min _{c_{1}} \sum_{x_{i} \in R_{1}(j, s)}\left(y_{i}-c_{1}\right)^{2}+\min _{c_{2}} \sum_{x_{i} \in R_{2}(j, s)}\left(y_{i}-c_{2}\right)^{2}\right] j,smin​⎣⎡​c1​min​xi​∈R1​(j,s)∑​(yi​−c1​)2+c2​min​xi​∈R2​(j,s)∑​(yi​−c2​)2⎦⎤​  
+对固定输入变量 j j j 可以找到最优切分点 s s s。  
+c ^ 1 = ave ⁡ ( y i ∣ x i ∈ R 1 ( j , s ) )  和  c ^ 2 = ave ⁡ ( y i ∣ x i ∈ R 2 ( j , s ) ) \hat{c}_{1}=\operatorname{ave}\left(y_{i} \mid x_{i} \in R_{1}(j, s)\right) \quad \text { 和 } \quad \hat{c}_{2}=\operatorname{ave}\left(y_{i} \mid x_{i} \in R_{2}(j, s)\right) c^1​=ave(yi​∣xi​∈R1​(j,s)) 和 c^2​=ave(yi​∣xi​∈R2​(j,s))  
+遍历所有输入变量， 找到最优切分变量 j j j， 构成一个对 ( j , s ) (j,s) (j,s)。 依此将输入空间划分为两个区域。 重复上面的过程， 直到满足条件， 这样就生成了一棵回归树。
+
+如果感觉上面的内容比较头大， 那么可以看下面的这个例子， 这个例子既说明了一下回归树是如何生成的， 又解释了回归问题提升树的原理， 这是李航老师书上的一个例子：
+
+![](https://img-blog.csdnimg.cn/20200908194241209.png#pic_center)  
+假设这里有 10 个训练样本的某个特征取值范围区间 [0.5, 10.5], y y y 的取值范围 [5.0, 10.0]， 我们学习一个提升树模型。
+
+首先通过下面的优化问题：  
+min ⁡ j , s [ min ⁡ c 1 ∑ x i ∈ R 1 ( j , s ) ( y i − c 1 ) 2 + min ⁡ c 2 ∑ x i ∈ R 2 ( j , s ) ( y i − c 2 ) 2 ] \min _{j, s}\left[\min _{c_{1}} \sum_{x_{i} \in R_{1}(j, s)}\left(y_{i}-c_{1}\right)^{2}+\min _{c_{2}} \sum_{x_{i} \in R_{2}(j, s)}\left(y_{i}-c_{2}\right)^{2}\right] j,smin​⎣⎡​c1​min​xi​∈R1​(j,s)∑​(yi​−c1​)2+c2​min​xi​∈R2​(j,s)∑​(yi​−c2​)2⎦⎤​  
+求训练数据的切分点 s s s. 根据所给数据， 我们考虑如下切分点：  
+1.5 , 2.5 , 3.5 , 4.5 , 5.5 , 6.5 , 7.5 , 8.5 , 9.5 1.5, 2.5, 3.5, 4.5,5.5, 6.5, 7.5, 8.5, 9.5 1.5,2.5,3.5,4.5,5.5,6.5,7.5,8.5,9.5  
+对于每个切分点， 很容易求出 R 1 , R 2 , c 1 , c 2 R_1, R_2, c_1, c_2 R1​,R2​,c1​,c2​及  
+m (s) = min ⁡ c 1 ∑ x i ∈ R 1 ( y i − c 1 ) 2 + min ⁡ c 2 ∑ x i ∈ R 2 ( y i − c 2 ) 2 m(s)=\min _{c_{1}} \sum_{x_{i} \in R_{1}}\left(y_{i}-c_{1}\right)^{2}+\min _{c_{2}} \sum_{x_{i} \in R_{2}}\left(y_{i}-c_{2}\right)^{2} m(s)=c1​min​xi​∈R1​∑​(yi​−c1​)2+c2​min​xi​∈R2​∑​(yi​−c2​)2  
+比如， 当 s = 1.5 s=1.5 s=1.5, R 1 = 1 , R 2 = 2 , 3 , . . . 10 R_1={1}, R_2={2, 3,...10} R1​=1,R2​=2,3,...10， 对应 y y y 的平均 c 1 = 5.56 , c 2 = 7.5 c_1=5.56, c_2=7.5 c1​=5.56,c2​=7.5, 这时候根据上面这个公式得到
+
+m (s) = min ⁡ c 1 ∑ x i ∈ R 1 ( y i − c 1 ) 2 + min ⁡ c 2 ∑ x i ∈ R 2 ( y i − c 2 ) 2 = 0 + 15.72 = 15.72 m(s)=\min _{c_{1}} \sum_{x_{i} \in R_{1}}\left(y_{i}-c_{1}\right)^{2}+\min _{c_{2}} \sum_{x_{i} \in R_{2}}\left(y_{i}-c_{2}\right)^{2}=0+15.72=15.72 m(s)=c1​min​xi​∈R1​∑​(yi​−c1​)2+c2​min​xi​∈R2​∑​(yi​−c2​)2=0+15.72=15.72  
+然后， 在当 s = 2.5 s=2.5 s=2.5 的时候， 再求一个 m, 得到如下表：  
+![](https://img-blog.csdnimg.cn/20200908194950878.png#pic_center)  
+可以发现 s = 6.5 s=6.5 s=6.5 的时候 m (s) m(s) m(s) 最小， 此时 R 1 = { 1 , 2 , . . . 6 } R_1=\{1, 2, ...6\} R1​={1,2,...6}, R 2 = { 7 , 8 , 9 , 10 } R_2=\{7, 8, 9, 10\} R2​={7,8,9,10}, c 1 = 6.24 , c 2 = 8.91 c_1=6.24, c_2=8.91 c1​=6.24,c2​=8.91, 所以这样就得到了第一棵回归树 T 1 (x) T_1(x) T1​(x) 为  
+T 1 (x) = { 6.24 , x < 6.5 8.91 , x ⩾ 6.5 T_{1}(x)=\left\{
+
+$$\begin{array}{ll} 6.24, & x<6.5 \\ 8.91, & x \geqslant 6.5 \end{array}$$
+
+\right.
+
+T1​(x)={6.24,8.91,​x<6.5x⩾6.5​
+
+即
+
+f 1 (x) = T 1 ( x ) f_1(x)=T_1(x) f1​(x)=T1​(x)
+
+。 这就是回归树的建树过程了， 然后谈到 BDT， 就会发现根据第一棵树， 每个训练数据会有一个残差， 也就是经过第一轮的预测， 与样本的真实值还是有些差距的， 即
+
+![](https://img-blog.csdnimg.cn/20200908195617102.png#pic_center)
+
+其中， r 2 i = y i − f 1 ( x i ) , i = 1 , 2 , ⋯   , 10 r_{2 i}=y_{i}-f_{1}\left(x_{i}\right), i=1,2, \cdots, 10 r2i​=yi​−f1​(xi​),i=1,2,⋯,10
+
+用 f 1 (x) f_1(x) f1​(x) 拟合训练数据的平方损失误差：  
+L ( y , f 1 (x) ) = ∑ i = 1 10 ( y i − f 1 ( x i ) ) 2 = 1.93 L\left(y, f_{1}(x)\right)=\sum_{i=1}^{10}\left(y_{i}-f_{1}\left(x_{i}\right)\right)^{2}=1.93 L(y,f1​(x))=i=1∑10​(yi​−f1​(xi​))2=1.93
+
+第二步， 就是求 T 2 (x) T_2(x) T2​(x), 方法和上面一样， 只是这次我们的训练集上图的残差的这个，把这个当做训练数据， 同理就会得到  
+T 2 (x) = { − 0.52 , x < 3.5 0.22 , x ⩾ 3.5 T_{2}(x)=\left\{
+
+$$\begin{array}{ll} -0.52, & x<3.5 \\ 0.22, & x \geqslant 3.5 \end{array}$$
+
+\right.
+
+T2​(x)={−0.52,0.22,​x<3.5x⩾3.5​
+
+这样， 我们就得到了 f 2 (x) f_2(x) f2​(x)  
+f 2 (x) = f 1 ( x ) + T 2 ( x ) = { 5.72 , x < 3.5 6.46 , 3.5 ⩽ x < 6.5 9.13 , x ⩾ 6.5 f_{2}(x)=f_{1}(x)+T_{2}(x)=\left\{
+
+$$\begin{array}{ll} 5.72, & x<3.5 \\ 6.46, & 3.5 \leqslant x<6.5 \\ 9.13, & x \geqslant 6.5 \end{array}$$
+
+\right.
+
+f2​(x)=f1​(x)+T2​(x)=⎩⎨⎧​5.72,6.46,9.13,​x<3.53.5⩽x<6.5x⩾6.5​
+
+用
+
+f 2 (x) f_2(x) f2​(x)
+
+拟合训练数据的平方损失误差：
+
+L ( y , f 2 (x) ) = ∑ i = 1 10 ( y i − f 2 ( x i ) ) 2 = 0.79 L\left(y, f_{2}(x)\right)=\sum_{i=1}^{10}\left(y_{i}-f_{2}\left(x_{i}\right)\right)^{2}=0.79 L(y,f2​(x))=i=1∑10​(yi​−f2​(xi​))2=0.79
+
+就会发现误差小了一些了。 然后我们可以再次求残差， 再进行下面树的建立， 再求误差。 但误差小到了我们允许的范围内， 停。
+
+这时候， f (x) = f n ( x ) f(x)=f_n(x) f(x)=fn​(x) 就是我们求得最终的提升树了。
+
+好了， 有了上面的基础， 相信下面的 GBDT 就比较容易了。 当然上面的**如何选择特征**， 其实就是考察 CART Tree 建立的过程， 也是上面这个了。
+
+### 3. 梯度提升之 GBDT 的原理
+
+提升树利用加法模型和前向分布算法实现学习的优化过程， 但损失函数是平方损失或者指数损失时， 优化比较简单， 但是对于一般的损失函数而言， 往往每一步优化不容易， 针对这个问题， 所以 Friedman 大神提出了利用最速下降的近似方法， 即**利用损失函数的负梯度**来拟合基学习器。就是它了  
+− [ ∂ L ( y i , F ( x i ) ) ∂ F ( x i ) ] F (x) = F t − 1 ( x ) -\left[\frac{\partial L\left(y_{i}, F\left(\mathbf{x}_{\mathbf{i}}\right)\right)}{\partial F\left(\mathbf{x}_{\mathbf{i}}\right)}\right]_{F(\mathbf{x})=F_{t-1}(\mathbf{x})} −[∂F(xi​)∂L(yi​,F(xi​))​]F(x)=Ft−1​(x)​  
+用这个东西直接作为残差的近似值，拟合回归树。
+
+怎么来理解这个近似呢？ 如果是平方损失函数的话， 就一目了然了：
+
+L ( y i , F ( x i ) ) = 1 2 ( y i − F ( x i ) ) 2 L\left(y_{i}, F\left(\mathbf{x}_{\mathbf{i}}\right)\right)=\frac{1}{2}\left(y_{i}-F\left(\mathbf{x}_{\mathbf{i}}\right)\right)^{2} L(yi​,F(xi​))=21​(yi​−F(xi​))2  
+这时候对 F ( X i ) F(X_i) F(Xi​) 求导， 得：  
+∂ L ( y i , F ( x i ) ) ∂ F ( x i ) = F ( x i ) − y i \frac{\partial L\left(y_{i}, F\left(\mathbf{x}_{\mathrm{i}}\right)\right)}{\partial F\left(\mathbf{x}_{\mathrm{i}}\right)}=F\left(\mathbf{x}_{\mathrm{i}}\right)-y_{i} ∂F(xi​)∂L(yi​,F(xi​))​=F(xi​)−yi​  
+就会发现， 这个残差正是梯度的相反数， 即：  
+r t i = y i − F t − 1 (x) = − [ ∂ L ( y i , F ( x i ) ) ∂ F ( x i ) ] F ( x ) = F t − 1 ( x ) r_{t i}=y_{i}-F_{t-1}(\mathbf{x})=-\left[\frac{\partial L\left(y_{i}, F\left(\mathbf{x}_{\mathbf{i}}\right)\right)}{\partial F\left(\mathbf{x}_{\mathbf{i}}\right)}\right]_{F(\mathbf{x})=F_{t-1}(\mathbf{x})} rti​=yi​−Ft−1​(x)=−[∂F(xi​)∂L(yi​,F(xi​))​]F(x)=Ft−1​(x)​  
+所以在 GBDT 中使用负梯度作为残差进行拟合， 当然这是平方损失函数， 其他损失的话， 也会得到近似的结论， 只不过不是完全相等， 这里放张图体会一下：
+
+![](https://img-blog.csdnimg.cn/20200910212355334.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3d1emhvbmdxaWFuZw==,size_1,color_FFFFFF,t_70#pic_center)  
+这其实就是 GBDT 的核心了， 即**利用损失函数的负梯度作为回归问题提升树算法中的残差的近似值去拟合一个回归树。gbdt 每轮迭代的时候，都去拟合损失函数在当前模型下的负梯度**。这样每轮训练的时候都能够让损失函数尽可能快的减小，尽快的收敛达到局部最优解或者全局最优解。
+
+下面就是 GBDT 的梯度提升流程（这里是宏观的角度， 即分类器是个大类）， 和 BDT 差不多，只不过残差这里直接用负梯度进行了替代。
+
+> 输入： 训练集 { ( x 1 , y 1 ) , ( x 2 , y 2 ) , . . . ( x N , y N ) } , y i 属 于 { + 1 , − 1 } \{(x_1, y_1), (x_2, y_2), ...(x_N, y_N)\}, y_i 属于 \{+1, -1\} {(x1​,y1​),(x2​,y2​),...(xN​,yN​)},yi​属于 {+1,−1} 。  
+> 
+> 1.  初始化： F 0 (x) = arg ⁡ min ⁡ h 0 ∑ i = 1 N L ( y i , h 0 ( x ) ) F_{0}(\mathbf{x})=\arg \min _{h_{0}} \sum_{i=1}^{N} L\left(y_{i}, h_{0}(\mathbf{x})\right) F0​(x)=argminh0​​∑i=1N​L(yi​,h0​(x))
+> 2.  for t=1 to T do
+>     1.  计算负梯度： y ~ i = − [ ∂ L ( y i , F ( x i ) ) ∂ F ( x i ) ] F (x) = F t − 1 ( x ) , i = 1 , 2 , ⋯   , N \tilde{y}_{i}=-\left[\frac{\partial L\left(y_{i}, F\left(\mathbf{x}_{i}\right)\right)}{\partial F\left(\mathbf{x}_{i}\right)}\right]_{F(\mathbf{x})=F_{t-1}(\mathbf{x})}, i=1,2, \cdots, N y~​i​=−[∂F(xi​)∂L(yi​,F(xi​))​]F(x)=Ft−1​(x)​,i=1,2,⋯,N
+>     2.  拟合残差得到基学习器：  
+>         w t = arg ⁡ min ⁡ w t ∑ i = 1 N ( y ~ i − h t ( x ; w t ) ) 2 w_{t}=\arg \min _{w_{t}} \sum_{i=1}^{N}\left(\tilde{y}_{i}-h_{t}\left(\mathbf{x} ; \mathbf{w}_{\mathbf{t}}\right)\right)^{2} wt​=argwt​min​i=1∑N​(y~​i​−ht​(x;wt​))2
+>     3.  得到基学习器的权重：  
+>         α t = arg ⁡ min ⁡ α t ∑ i = 1 N L ( y i , f t − 1 ( x i ) + α t h t ( x ; w t ) ) \alpha_{t}=\arg \min _{\alpha_{t}} \sum_{i=1}^{N} L\left(y_{i}, f_{t-1}\left(\mathbf{x}_{\mathbf{i}}\right)+\alpha_{t} h_{t}\left(\mathbf{x} ; \mathbf{w}_{t}\right)\right) αt​=argαt​min​i=1∑N​L(yi​,ft−1​(xi​)+αt​ht​(x;wt​))
+>     4.  更新 F t (x) = F t − 1 ( x i ) + α t h t ( x ; w t ) F_{t}(\mathbf{x})=F_{t-1}\left(\mathbf{x}_{\mathbf{i}}\right)+\alpha_{t} h_{t}\left(\mathbf{x} ; \mathbf{w}_{\mathbf{t}}\right) Ft​(x)=Ft−1​(xi​)+αt​ht​(x;wt​)
+
+如果公式不好看， 那就看图， 这个图应该也是了然：
+
+![](https://img-blog.csdnimg.cn/20200908202508786.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3d1emhvbmdxaWFuZw==,size_1,color_FFFFFF,t_70#pic_center)  
+可以发现 **GBDT 和提升树的区别是残差使用了损失函数的负梯度来替代， 且每个基学习器有了对应的参数权重**。gbdt 通过多轮迭代, 每轮迭代产生一个弱分类器，每个分类器在上一轮分类器的残差基础上进行训练。对弱分类器的要求一般是足够简单，并且是低方差和高偏差的 (因为训练的过程是通过降低偏差来不断提高最终分类器的精度)。 弱分类器一般会选择为 CART TREE（也就是分类回归树）。由于上述高偏差和简单的要求每个分类回归树的深度不会很深。最终的总分类器是将每轮训练得到的弱分类器加权求和得到的（也就是加法模型）。
+
+这就是 GBDT 的训练流程了， 当然要明确一点， **gbdt 无论用于分类还是回归一直都是使用 CART 回归树**， 这个原因后面会说， 既然是用的回归树， 我们就有：  
+f (X) = ∑ k = 1 K c k I ( X ∈ R k ) f(\mathbf{X})=\sum_{k=1}^{K} c_{k} I\left(\mathbf{X} \in R_{k}\right) f(X)=k=1∑K​ck​I(X∈Rk​)  
+这时候， 流程可以化成下面的形式了，
+
+![](https://img-blog.csdnimg.cn/20200908204517545.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3d1emhvbmdxaWFuZw==,size_1,color_FFFFFF,t_70#pic_center)  
+算法第 1 步初始化，估计使损失函数极小化的常数值， 它是只有一个根结点的树。第 2(a) 步计算损失函数的负梯度在当前模型的值，将它作为残差的估计。对于平方损失函数，它就是通常所说的残差，对于一般损失函数，它就是残差的近似值。第 2(b) 步估计回归树叶结点区域，以拟合残差的近似值。第 2(c ) 步利用线性搜索估计叶结点区域的值，使损失函数极小化。第 2(d) 步更新回归树。第 3 步得到输出的最终 模型 f ^ (x) \hat f(x) f^​(x)。
+
+这就是 GBDT 算法的流程了。上面的第一个问题。下面进行下一个问题， GBDT 如何构建特征？但在进行这个问题之前，想重新分析下上面的一个很关键问题，那就是 GBDT 的残差为啥可以用负梯度代替，因为我后来再看的时候，上面的那个泰勒展开式突然又想不通是啥意思了，没有看到残差的身影吧？ 怎么就直接负梯度近似残差了呢？ 并且还有个比较大的问题就是，一旦这个地方想不明白了，后面的 XGBoost 和 LightGBM 等的具体建树过程就业看不明白了，这是一连串的，所以再看 XGBoost 的时候，我又产生了一个疑问就是每一个树之间到底是怎么通过残差联系起来了呢？ 在 XGBoost 的建树过程中，这个残差是怎么在树与树之间体现的呢？ 你说，不是有一阶导和二阶导帮助建树吗？假设我们基于样本在损失函数下的一阶导和二阶导建立完了第一棵树，第二棵树是怎么建立的？ 之前我一直以为只要损失函数定了，样本特征定了，这里的一阶导和二阶导就定了，那不就和残差扯不上关系了？ 直到今天，又仔细看了一些资料才发现，这里的一阶导和二阶导是损失函数虽然是对样本的，但是是损失函数对样本的预测值求的导数，和什么样本特征有什么毛线关系? 这里我确实有点和梯度下降的参数那里混了。 然后就悟到了每一次建树之后，这个预测值是会变的，也就是 F m − 1 (x) F_{m-1}(x) Fm−1​(x)，毕竟前向分步加法，建一棵树之后，就会累加新树的预测值，所以这个东西时刻在变， 那么相应的每个样本的一阶导和二阶导都会发生改变，就拿平方损失来说就可以，一阶导是 F m − 1 ( X i ) − y i F_{m-1}(X_i)-y_i Fm−1​(Xi​)−yi​。所以这样，XGBoost 再建树的时候，每个叶子上的 G 和 H 就会变了，这样才能基于前面的树不断的往后构建。 行吧，可能上面这段完全不知道我在说啥，这个不要紧，关键的是下面这段要理解清楚了，就能够对 GBDT 甚至 XGBoost 的具体建树过程有一个更新的理解，这个是来自于[这篇文章](https://www.zhihu.com/question/63560633)， 在里面摘录并且做了一定的解释，希望能从本质的角度再去看 GBDT。
+
+### 4. 从梯度下降的角度再看 GBDT，会有一个新的感受
+
+这个是我上面产生了这个问题之后，又重新查的相关资料得到的所悟， 具体细节可以看上面的链接， 这里我们从梯度下降的角度再去看 GBDT。
+
+GBDT 叫做梯度提升树， 这和梯度下降有啥联系吗？ 我最下边也从百面机器学习上摘抄了下两者的区别，简单的来说就是一个是在函数空间，一个是在参数空间，而 **GBDT 的求解过程就可以理解为梯度下降在函数空间的优化过程**。
+
+那么，下面就可以进行类比了， 首先， 在梯度下降里面，我们是可以通过一阶泰勒展开来证明负梯度方向是目标函数下降最快的方向，具体的可以看我之前的[博文总结](https://blog.csdn.net/wuzhongqiang/article/details/107796187?ops_request_misc=%257B%2522request%255Fid%2522%253A%2522161905876616780357220975%2522%252C%2522scm%2522%253A%252220140713.130102334.pc%255Fblog.%2522%257D&request_id=161905876616780357220975&biz_id=0&utm_medium=distribute.pc_search_result.none-task-blog-2~blog~first_rank_v2~rank_v29-1-107796187.nonecase&utm_term=%E6%A2%AF%E5%BA%A6%E4%B8%8B%E9%99%8D%E3%80%81)。这里写结论：  
+f ( θ k + 1 ) ≈ f ( θ k ) + ∂ f ( θ k ) ∂ θ k ( θ k + 1 − θ k ) f\left(\theta_{k+1}\right) \approx f\left(\theta_{k}\right)+\frac{\partial f\left(\theta_{k}\right)}{\partial \theta_{k}}\left(\theta_{k+1}-\theta_{k}\right) f(θk+1​)≈f(θk​)+∂θk​∂f(θk​)​(θk+1​−θk​)  
+这个式子可以进一步化简：  
+f ( θ k + 1 ) − f ( θ k ) ≈ ∂ f ( θ k ) ∂ θ k ( θ k + 1 − θ k ) < 0 f\left(\theta_{k+1}\right) - f\left(\theta_{k}\right) \approx \frac{\partial f\left(\theta_{k}\right)}{\partial \theta_{k}}\left(\theta_{k+1}-\theta_{k}\right) < 0 f(θk+1​)−f(θk​)≈∂θk​∂f(θk​)​(θk+1​−θk​)<0  
+这时候，令 ( θ k + 1 − θ k ) = η v \left(\theta_{k+1}-\theta_{k}\right)=\eta v (θk+1​−θk​)=ηv， 这时候得到  
+η v ∂ f ( θ k ) ∂ θ k < 0 \eta v \frac{\partial f\left(\theta_{k}\right)}{\partial \theta_{k}} < 0 ηv∂θk​∂f(θk​)​<0  
+η \eta η是大于 0 的常数，所以立即推  
+v ∂ f ( θ k ) ∂ θ k = ∣ ∣ v ∣ ∣ ∣ ∣ ∂ f ( θ k ) ∂ θ k ∣ ∣ c o s (θ) < 0 v \frac{\partial f\left(\theta_{k}\right)}{\partial \theta_{k}} = ||v|| ||\frac{\partial f\left(\theta_{k}\right)}{\partial \theta_{k}}||cos(\theta)< 0 v∂θk​∂f(θk​)​=∣∣v∣∣∣∣∂θk​∂f(θk​)​∣∣cos(θ)<0  
+当两者夹角是 180 度的时候，这两者的乘积是最小的，也是下降最快的。也就是 v = − ∂ f ( θ k ) ∂ θ k v=-\frac{\partial f\left(\theta_{k}\right)}{\partial \theta_{k}} v=−∂θk​∂f(θk​)​的时候，所以就有了  
+θ k + 1 = θ k − η ∂ f ( θ k ) ∂ θ k \theta_{k+1}=\theta_{k}-\eta \frac{\partial f\left(\theta_{k}\right)}{\partial \theta_{k}} θk+1​=θk​−η∂θk​∂f(θk​)​  
+这是梯度下降中参数更新过程的一个由来。 那么我们类比 GBDT 呢？
+
+在 GBDT 中，我们把它的损失函数也展开：  
+L ( y , F m (x) ) ≈ L ( y , F m − 1 ( x ) ) + ∂ L ( y , F m − 1 ( x ) ) ∂ F m − 1 ( x ) ( F m ( x ) − F m − 1 ( x ) ) L\left(y, F_{m}(x)\right) \approx L\left(y, F_{m-1}(x)\right)+\frac{\partial L\left(y, F_{m-1}(x)\right)}{\partial F_{m-1}(x)}\left(F_{m}(x)-F_{m-1}(x)\right) L(y,Fm​(x))≈L(y,Fm−1​(x))+∂Fm−1​(x)∂L(y,Fm−1​(x))​(Fm​(x)−Fm−1​(x))  
+这里的 F m (x) − F m − 1 ( x ) = T m ( x ) F_{m}(x)-F_{m-1}(x)=T_m(x) Fm​(x)−Fm−1​(x)=Tm​(x) 就是我们即将要学习的第 m m m 棵树了。这里同样根据上面的分析过程，损失函数下降最快的方向同样也是负梯度方向，即  
+F m (x) = F m − 1 ( x ) − η ∂ L ( y , F m − 1 ( x ) ) ∂ F m − 1 ( x ) F_{m}(x)=F_{m-1}(x)-\eta \frac{\partial L\left(y, F_{m-1}(x)\right)}{\partial F_{m-1}(x)} Fm​(x)=Fm−1​(x)−η∂Fm−1​(x)∂L(y,Fm−1​(x))​  
+所以，这里的新分类器 T m (x) = − η ∂ L ( y , F m − 1 ( x ) ) ∂ F m − 1 ( x ) T_m(x)=-\eta\frac{\partial L\left(y, F_{m-1}(x)\right)}{\partial F_{m-1}(x)} Tm​(x)=−η∂Fm−1​(x)∂L(y,Fm−1​(x))​， 即当前的弱分类器学习的是负梯度。 这里和 GBDT 中差了一个常数 η \eta η。
+
+所以 GBDT 中，每个新的弱分类器是学习这个负梯度的， 而残差只不过是当损失函数式平方损失的时候一个特列而已，这也就是为啥 GBDT 中可以使用其他损失函数同样能够学习的原因，上面说一般损失函数是拟合的残差近似值其实也是不太准确的说法。
+
+所以在梯度下降和 GBDT 中，都是梯度下降的原理，只不过在梯度下降中，是参数空间中的优化，每次迭代得到的是参数的增量 (负梯度乘上学习率)， 而 GBDT 中，是函数空间中的优化，这个函数会拟合负梯度，在 GBDT 中，这个函数就是一棵棵决策树。 要得到最终结果，只需要把初始值或者初始的函数加上每次的增量。
+
+所以在梯度下降中 (假设迭代了 M 次):  
+θ 1 = θ 0 − η ∂ f ( θ 0 ) ∂ θ 0 θ 2 = θ 1 − η ∂ f ( θ 1 ) ∂ θ 1 … θ M = θ M − 1 − η ∂ f ( θ M − 1 ) ∂ θ M − 1
+
+$$\begin{array}{c} \theta_{1}=\theta_{0}-\eta \frac{\partial f\left(\theta_{0}\right)}{\partial \theta_{0}} \\ \theta_{2}=\theta_{1}-\eta \frac{\partial f\left(\theta_{1}\right)}{\partial \theta_{1}} \\ \ldots \\ \theta_{M}=\theta_{M-1}-\eta \frac{\partial f\left(\theta_{M-1}\right)}{\partial \theta_{M}-1} \end{array}$$
+
+θ1​=θ0​−η∂θ0​∂f(θ0​)​θ2​=θ1​−η∂θ1​∂f(θ1​)​…θM​=θM−1​−η∂θM​−1∂f(θM−1​)​​
+
+等号两边相加越掉化简，得到最终的优化结果：
+
+θ M = θ 0 + η ∑ m = 0 M − 1 − ∂ f ( θ m ) ∂ θ m \theta_{M}=\theta_{0}+\eta \sum_{m=0}^{M-1}-\frac{\partial f\left(\theta_{m}\right)}{\partial \theta_{m}} θM​=θ0​+ηm=0∑M−1​−∂θm​∂f(θm​)​
+
+而在 GBDT 中，也是同样的方法：  
+F 1 (x) = F 0 ( x ) − η ∂ L ( y , F 0 ( x ) ) ∂ F 0 ( x ) ,  即  T 1 ( x ) = − η ∂ L ( y , F m − 1 ( x ) ) ∂ F m − 1 ( x ) . . . . F M ( x ) = F M − 1 ( x ) − η ∂ L ( y , F M − 1 ( x ) ) ∂ F M − 1 ( x ) ,  即  T M ( x ) = − η ∂ L ( y , F M − 1 ( x ) ) ∂ F M − 1 ( x )
+
+$$\begin{array}{c} F_{1}(x)=F_{0}(x)-\eta \frac{\partial L\left(y, F_{0}(x)\right)}{\partial F_{0}(x)}, \quad \text { 即 } T_{1}(x)=-\eta \frac{\partial L\left(y, F_{m-1}(x)\right)}{\partial F_{m-1}(x)} \\ .... \\ F_{M}(x)=F_{M-1}(x)-\eta \frac{\partial L\left(y, F_{M-1}(x)\right)}{\partial F_{M-1}(x)}, \quad \text { 即 } T_{M}(x)=-\eta \frac{\partial L\left(y, F_{M-1}(x)\right)}{\partial F_{M-1}(x)} \end{array}$$
+
+F1​(x)=F0​(x)−η∂F0​(x)∂L(y,F0​(x))​, 即 T1​(x)=−η∂Fm−1​(x)∂L(y,Fm−1​(x))​....FM​(x)=FM−1​(x)−η∂FM−1​(x)∂L(y,FM−1​(x))​, 即 TM​(x)=−η∂FM−1​(x)∂L(y,FM−1​(x))​​
+
+等号两边相加约掉化简，得最终结果：
+
+F (x) = F M ( x ) = F 0 ( x ) + η ∑ m = 0 M − 1 − ∂ L ( y , F m ( x ) ) ∂ F m ( x ) = ∑ m = 0 M T m ( x ) F(x)=F_{M}(x)=F_{0}(x)+\eta \sum_{m=0}^{M-1}-\frac{\partial L\left(y, F_{m}(x)\right)}{\partial F_{m}(x)}=\sum_{m=0}^{M} T_{m}(x) F(x)=FM​(x)=F0​(x)+ηm=0∑M−1​−∂Fm​(x)∂L(y,Fm​(x))​=m=0∑M​Tm​(x)
+
+这才是 GBDT 的本身。所以无论损失函数式什么形式，每个决策树拟合的都是负梯度。并且这里说的负梯度，会看到是损失函数，对于样本的预测值的求导。 这个值是和样本的当前预测值是有关系，这可能也是他们上面说的残差的近似的原因。 当建立一棵树之后，这个
+
+F m (x) F_m(x) Fm​(x)
+
+就会改变，所以这里的负梯度在每次迭代的时候也会改变。 而 GBDT 新建立树拟合的时候，就是拟合每个样本的这个负梯度，而由于这个东西和降低残差有显著的相关性，所以还可以根据这个负梯度来衡量每个样本对于降低残差的程度，以此判断样本的重要性 (Lightgbm 中就是基于这个原理进行的单边梯度抽样)。
+
+而串联一步，就是只要搞明白了这个东西，对于后面理解 XGBoost 也非常有用，XGBoost 的一个重要改进，就是它把损失函数展开到了二阶上 (二阶泰勒展开)， 又引入了一个二阶导数，这样不仅指明了每个样本对于降低残差是否有贡献，还能看出贡献的程度，可以增加精度和速度 (类似于牛顿法和梯度下降法的区别)。而建树的准则也借助了每个样本在损失函数上的二阶导信息。如果我们把 XGBoost 最后拟合的东西拿过来，会发现是这样的一个：  
+w j ∗ = − G j H j + λ w_{j}^{*}=-\frac{G_{j}}{H_{j}+\lambda} wj∗​=−Hj​+λGj​​  
+其中 G j G_j Gj​和 H j H_j Hj​是前 t − 1 t-1 t−1 步损失函数对样本预测值的一阶导和二阶导。这东西猛地一看并没有和上面有啥关联，其实这里的分类器会等于 F M (x) − F M − 1 ( x ) = T m ( x ) = − η L ′ ( y , F m − 1 ( x ) ) L ′ ′ ( y , F m − 1 ( x ) ) + λ F_{M}(x)-F_{M-1}(x)=T_m(x)=-\eta\frac{L'\left(y, F_{m-1}(x)\right)}{L''\left(y, F_{m-1}(x)\right)+\lambda} FM​(x)−FM−1​(x)=Tm​(x)=−ηL′′(y,Fm−1​(x))+λL′(y,Fm−1​(x))​， 如果这个东西也没有感觉的话， 那就再把优化算法里面的牛顿法的更新公式拿过来：  
+x t + 1 = x t − η f ′ ( x t ) f ′ ′ ( x t ) x_{t+1}=x_{t}-\eta\frac{f^{\prime}\left(x_{t}\right)}{f^{\prime \prime}\left(x_{t}\right)} xt+1​=xt​−ηf′′(xt​)f′(xt​)​  
+对比下 xgboost:  
+F M (x) = F M − 1 ( x ) − η L ′ ( y , F m − 1 ( x ) ) L ′ ′ ( y , F m − 1 ( x ) ) + λ F_{M}(x)=F_{M-1}(x)-\eta\frac{L'\left(y, F_{m-1}(x)\right)}{L''\left(y, F_{m-1}(x)\right)+\lambda} FM​(x)=FM−1​(x)−ηL′′(y,Fm−1​(x))+λL′(y,Fm−1​(x))​  
+这样，就回到了 XGBoost 的本质上去了，是不是也不是那么神秘了哈哈，XGBoost 更像是牛顿法在函数空间的求解过程。当然，目前这是我自己的发现哈，没有找到任何参考。
+
+### 5. GBDT 如何构建特征
+
+其实说 gbdt 能够构建特征并非很准确，gbdt 本身是不能产生特征的，但是我们可以利用 gbdt 去产生特征的组合。在 CTR 预估中，工业界一般会采用逻辑回归去进行处理, 在逻辑回归那篇文章中已经说过，逻辑回归本身是适合处理线性可分的数据，如果我们想让逻辑回归处理非线性的数据，其中一种方式便是组合不同特征，增强逻辑回归对非线性分布的拟合能力。
+
+长久以来，我们都是通过人工的先验知识或者实验来获得有效的组合特征，但是很多时候，使用人工经验知识来组合特征过于耗费人力，造成了机器学习当中一个很奇特的现象：有多少人工就有多少智能。关键是这样通过人工去组合特征并不一定能够提升模型的效果。所以我们的从业者或者学界一直都有一个趋势便是通过算法自动，高效的寻找到有效的特征组合。Facebook 在 2014 年 发表的一篇论文便是这种尝试下的产物，利用 gbdt 去产生有效的特征组合，以便用于逻辑回归的训练，提升模型最终的效果。
+
+这本应该是[推荐系统](https://so.csdn.net/so/search?q=%E6%8E%A8%E8%8D%90%E7%B3%BB%E7%BB%9F&spm=1001.2101.3001.7020)那边的模型， 后面会在那边再详细整理一下这个， 这里简单整理一下这个过程：看论文里面的这个图：  
+![](https://img-blog.csdnimg.cn/20200908210039657.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3d1emhvbmdxaWFuZw==,size_1,color_FFFFFF,t_70#pic_center)  
+我们 使用 GBDT 生成了两棵树，两颗树一共有五个叶子节点。我们将样本 X 输入到两颗树当中去，样本 X 落在了第一棵树的第二个叶子节点，第二颗树的第一个叶子节点，于是我们便可以依次构建一个五维的特征向量，每一个纬度代表了一个叶子节点，样本落在这个叶子节点上面的话那么值为 1，没有落在该叶子节点的话，那么值为 0.
+
+于是对于该样本，我们可以得到一个向量 [0,1,0,1,0] 作为该样本的组合特征，和原来的特征一起输入到逻辑回归当中进行训练。实验证明这样会得到比较显著的效果提升。
+
+关于这个模型的详细整理和代码实践部分， 可以参考推荐系统专栏里面的 LR+GBDT 模型， 这里不多说， 但是这里会有一个问题， 就是 LR+GBDT 模型一般是用于点击率预测里面， 而点击率预测是个典型的分类问题（点击或者不点击）， 而我们上面一直说 GBDT 用的是 CART 回归树， 那么我们上面那部分进行样本类别划分的时候， 是怎么划分的呢？ 回归树不是输出连续值吗？ 我们怎么训练上面的 GBDT 模型？
+
+所以下面才是重点， GBDT 如何用于分类？
+
+### 6. GBDT 如何用于分类？
+
+首先明确一点，**gbdt 无论用于分类还是回归一直都是使用的 CART 回归树**。不会因为我们所选择的任务是分类任务就选用分类树，这里面的核心**是因为 gbdt 每轮的训练是在上一轮的训练的残差基础之上进行训练的**。这里的残差就是当前模型的负梯度值 。这个要求每轮迭代的时候，弱分类器的输出的结果相减是有意义的。残差相减是有意义的。
+
+如果选用的弱分类器是分类树，类别相减是没有意义的。上一轮输出的是样本 x 属于 A 类，本一轮训练输出的是样本 x 属于 B 类。 A 和 B 很多时候甚至都没有比较的意义，A 类 - B 类是没有意义的。 那么我们如何进行分类呢？
+
+假设样本 X 总共有 K 类， 来了一个样本， 我们使用 gbdt 来判断样本 x 属于哪一类？ 流程如下：
+
+1.  我们在训练的时候， 是针对样本 X 每个可能的类训练一个分类回归树。  
+    举个例子， 假设目前样本一共三类， 也就是 K=3, 样本 x 属于第二类。 那么针对该样本 x 的分类结果， 我们可以用一个三维向量`[0, 1, 0]`来表示。 0 表示样本不属于该类， 1 表示属于该类， 因为样本属于第二类嘛。
+2.  针对样本有三类的情况， 我们实质上每轮训练的时候是训练三棵树  
+    第一棵针对样本 x 得第一类， 输入为`(x, 0)`, 第二棵是针对样本 x 的第二类， 输入`(x, 1)`, 第三棵针对样本 x 的第三类， 输入`(x, 0)`, 这里的具体训练过程就是我们上面 CART 回归树生成过程了， 按照上面的生成过程， 我们就可以解出这三棵树以及三棵树上 x 类别的预测值 f 1 (x) , f 2 ( x ) , f 3 ( x ) f_{1}(x), f_{2}(x), f_{3}(x) f1​(x),f2​(x),f3​(x)。
+3.  在此类训练中， 我们仿照多分类的逻辑回归， 使用 softmax 产生概率， 则属于类别 1 的概率：
+
+p 1 (x) = exp ⁡ ( f 1 ( x ) ) ∑ l = 1 3 exp ⁡ ( f l ( x ) ) p_{1}(\mathbf{x})=\frac{\exp \left(f_{1}(\mathbf{x})\right)}{ \sum_{l=1}^{3} \exp \left(f_{l}(\mathbf{x})\right)} p1​(x)=∑l=13​exp(fl​(x))exp(f1​(x))​
+
+4.  对每个类别分别计算残差  
+    如类别 1： y ~ 1 = 0 − p 1 (x) \tilde{y}_{1}=0-p_{1}\left(\mathbf{x}{\mathbf{}}\right) y~​1​=0−p1​(x)， 类别 2： y ~ 2 = 1 − p 2 (x) \tilde{y}_{2}=1-p_{2}\left(\mathbf{x}{\mathbf{}}\right) y~​2​=1−p2​(x)， 类别 3： y ~ 3 = 0 − p 3 (x) \tilde{y}_{3}=0-p_{3}\left(\mathbf{x}{\mathbf{}}\right) y~​3​=0−p3​(x)
+5.  开始第二轮的训练， 针对第一类输入为 ( x , y ~ 1 ) \left(\mathbf{x}_{\mathbf{}}, \tilde{y}_{1}\right) (x​,y~​1​)， 针对第二类输入为 ( x , y ~ 2 ) \left(\mathbf{x}_{\mathbf{}}, \tilde{y}_{2}\right) (x​,y~​2​)， 针对第三类输入为 ( x , y ~ 3 ) \left(\mathbf{x}_{\mathbf{}}, \tilde{y}_{3}\right) (x​,y~​3​)， 继续训练出三棵树。
+6.  重复 5 直到迭代 M 轮， 就得到了最后的模型， 预测的时候只要找出概率最高的即为对应的类别。
+
+如果感觉上面的理论比较难理解， 那么依然是来一个例子， 鸢尾花分类的数据集作为例子， 看一下 gbdt 多分类的过程。
+
+数据集如下：  
+![](https://img-blog.csdnimg.cn/20200908212604211.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3d1emhvbmdxaWFuZw==,size_1,color_FFFFFF,t_70#pic_center)  
+这是一个有 6 个样本的三分类问题。我们需要根据这个花的花萼长度，花萼宽度，花瓣长度，花瓣宽度来判断这个花属于山鸢尾，杂色鸢尾，还是维吉尼亚鸢尾。具体应用到 gbdt 多分类算法上面。我们用一个三维向量来标志样本的 label。`[1,0,0]` 表示样本属于山鸢尾，`[0,1,0]` 表示样本属于杂色鸢尾，`[0,0,1]` 表示属于维吉尼亚鸢尾。
+
+以样本 1 为例， 第一轮要训练 3 棵 CART 树， 对于第一棵 CART 回归树， 训练样本是 [5.1, 3.5, 1.4, 0.2], label 是 1，第二棵 训练样本是 [5.1, 3.5, 1.4, 0.2], label 是 0， 第三棵训练样本是 [5.1, 3.5, 1.4, 0.2], label 是 0。
+
+下面我们看 CART 1 是如何生成的， CART 1 生成过程是从这四个特征中找一个特征作为 CART 1 的节点， 比如花萼长度作为节点， 6 个样本当中花萼长度 大于 5.1 cm 的就是 A 类，小于等于 5.1 cm 的是 B 类。生成的过程其实非常简单，但是有两个问题 ：
+
+1.  是哪个特征最合适？
+2.  是这个特征的什么特征值作为切分点？
+
+即使我们已经确定了花萼长度做为节点。花萼长度本身也有很多值。在这里我们的方式是遍历所有的可能性，找到一个最好的特征和它对应的最优特征值可以让当前式子的值最小。  
+min ⁡ j , s [ min ⁡ q ∑ x i ∈ R 1 ( j , s ) ( y i − c 1 ) 2 + min ⁡ a i ∑ x i ∈ R 2 ( j , s ) ( y i − c 2 ) 2 ] \min _{j, s}\left[\min _{q} \sum_{x_{i} \in R_{1}(j, s)}\left(y_{i}-c_{1}\right)^{2}+\min _{a_{i}} \sum_{x_{i} \in R_{2}(j, s)}\left(y_{i}-c_{2}\right)^{2}\right] j,smin​⎣⎡​qmin​xi​∈R1​(j,s)∑​(yi​−c1​)2+ai​min​xi​∈R2​(j,s)∑​(yi​−c2​)2⎦⎤​  
+还记得这个吗？ 我们以第一个特征的第一个特征值为例。 R 1 R_1 R1​ 为所有样本中花萼长度小于 5.1 cm 的样本集合， R 2 R_2 R2​ 为所有样本当中花萼长度大于等于 5.1cm 的样本集合。所以 R 1 = {2} , R 2 = { 1 , 3 , 4 , 5 , 6 } R_1=\{2\}, R_2=\{1,3,4,5,6\} R1​={2},R2​={1,3,4,5,6}
+
+![](https://img-blog.csdnimg.cn/20200908213527528.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3d1emhvbmdxaWFuZw==,size_1,color_FFFFFF,t_70#pic_center)  
+解释一下上面这个图就是 y 1 y_1 y1​是 R 1 R_1 R1​label 的均值， 由于 R 1 R_1 R1​只有一个元素且 label 为 1， 则均值为 1， 即 y 1 = 1 y_1=1 y1​=1, y 2 y_2 y2​是 R 2 R_2 R2​的 label 均值， 由于 R 2 R_2 R2​里面只有 1 的 label 是 1， 3， 4， 5， 6label 是 0， 故均值是 0.2， 下面就是用上面的公式计算的损失函数了。 就会发现山鸢尾类型在特征 1 的第一个特征值上的损失为 0.8。
+
+同样的方式， 我们可以计算特征 1 上第二个特征值上的损失， R 1 R_1 R1​为所有样本花萼长度小于 4.9cm 的样本集合， R 2 R_2 R2​为所有样本中花萼长度大于等于 4.9cm 的样本集合。 所以 R 1 = { } , R 2 = { 1 , 2 , 3 , 4 , 5 , 6 } R_1=\{\}, R_2=\{1, 2, 3, 4, 5, 6\} R1​={},R2​={1,2,3,4,5,6}, 再计算得到特征 1 的第二个特征上的损失：  
+![](https://img-blog.csdnimg.cn/20200908214552588.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3d1emhvbmdxaWFuZw==,size_1,color_FFFFFF,t_70#pic_center)  
+这样我们可以遍历所有特征的所有特征值，找到让这个式子最小的特征以及其对应的特征值。 在这里我们算出来让这个式子最小的特征花萼长度, 特征值为 5.1 cm。这个时候损失函数最小为 0.8。
+
+于是我们的预测函数为：  
+f (x) = ∑ x ϵ R 1 y 1 ∗ I ( x ϵ R 1 ) + ∑ x ϵ R 2 y 2 ∗ I ( x ϵ R 2 ) f(x)=∑_{xϵR1}y1∗I(xϵR1)+∑_{xϵR2}y2∗I(xϵR2) f(x)=xϵR1∑​y1∗I(xϵR1)+xϵR2∑​y2∗I(xϵR2)  
+此处 R 1 = {2} , R 2 = { 1 , 3 , 4 , 5 , 6 } R_1=\{2\}, R_2=\{1, 3, 4, 5, 6\} R1​={2},R2​={1,3,4,5,6}, y 1 = 1 , y 2 = 0.2 y_1=1, y_2=0.2 y1​=1,y2​=0.2, 训练完以后的最终式子为：  
+f 1 (x) = ∑ x ϵ R 1 1 ∗ I ( x ϵ R 1 ) + ∑ x ϵ R 2 0.2 ∗ I ( x ϵ R 2 ) f1(x)=∑_{xϵR1}1∗I(xϵR1)+∑_{xϵR2}0.2∗I(xϵR2) f1(x)=xϵR1∑​1∗I(xϵR1)+xϵR2∑​0.2∗I(xϵR2)
+
+因此， 我们得到对样本属于类别 1 的预测值  
+f 1 (x) = 1 + 0.2 ∗ 5 = 2 f 1 ( x ) = 1 + 0.2 ∗ 5 = 2 f1(x)=1+0.2∗5=2f1(x)=1+0.2∗5=2 f1(x)=1+0.2∗5=2f1(x)=1+0.2∗5=2
+
+同理， 我们也可以构建 CART 2 和 CART 3 计算得到样本属于类别 2 和类别 3 的预测值 f 2 (x) , f 3 ( x ) f_2(x), f_3(x) f2​(x),f3​(x)， 那么我们就可以根据 softmax 得到样本属于类别 1 的概率：  
+p 1 (x) = exp ⁡ ( f 1 ( x ) ) ∑ l = 1 3 exp ⁡ ( f l ( x ) ) p_{1}(\mathbf{x})=\frac{\exp \left(f_{1}(\mathbf{x})\right)}{ \sum_{l=1}^{3} \exp \left(f_{l}(\mathbf{x})\right)} p1​(x)=∑l=13​exp(fl​(x))exp(f1​(x))​  
+类别 2 和类别 3 的也能算出来， 然后就可以得到残差， 每个样本都是如此， 就可以进行第二轮的训练了。
+
+这就解决了上面的问题 4， 最后再整理一个。
+
+### 7. 为何 GBDT 如此受人青睐
+
+GBDT 的优势 首先得益于 Decision Tree 本身的一些良好特性，具体可以列举如下:
+
+1.  Decision Tree 可以很好的处理 missing feature，这是他的天然特性，因为决策树的每个节点只依赖一个 feature，如果某个 feature 不存在，这颗树依然可以拿来做决策，只是少一些路径。像逻辑回归，SVM 就没这个好处。
+    
+2.  Decision Tree 可以很好的处理各种类型的 feature，也是天然特性，很好理解，同样逻辑回归和 SVM 没这样的天然特性。
+    
+3.  对特征空间的 outlier 有鲁棒性，因为每个节点都是 x <𝑇 的形式，至于大多少，小多少没有区别，outlier 不会有什么大的影响，同样逻辑回归和 SVM 没有这样的天然特性 (SVM 好像有，因为它只关注支持向量)。
+    
+4.  如果有不相关的 feature，没什么干扰，如果数据中有不相关的 feature，顶多这个 feature 不出现在树的节点里。逻辑回归和 SVM 没有这样的天然特性 (但是有相应的补救措施，比如逻辑回归里的 L1 正则化)。
+    
+5.  数据规模影响不大，因为我们对弱分类器的要求不高，作为弱分类器的决策树的深 度一般设的比较小，即使是大数据量，也可以方便处理。像 SVM 这种数据规模大的时候训练会比较麻烦。
+    
+6.  预测极端的计算速度快， 树与树之间可并行计算
+    
+7.  采用决策树作为弱分类使得 GBDT 模型具有较好的可解释性和鲁棒性，能自动发现特征间的高阶关系，且不需要对数据进行特殊处理 (如归一化)。
+    
+
+当然 Decision Tree 也不是毫无缺陷，通常在给定的不带噪音的问题上，他能达到的最佳分类效果还是不如 SVM，逻辑回归之类的。但是，我们实际面对的问题中，往往有很大的噪音，使得 Decision Tree 这个弱势就不那么明显了。而且，GBDT 通过不断的叠加组合多个小的 Decision Tree，他在不带噪音的问题上也能达到很好的分类效果。换句话说，通过 GBDT 训练组合多个小的 Decision Tree 往往要比一次性训练一个很大的 Decision Tree 的效果好很多。因此不能把 GBDT 理解为一颗大的决策树，几颗小树经过叠加后就不再是颗大树了，它比一颗大树更强。
+
+局限性还是有的：
+
+*   GBDT 在高维稀疏的数据集上， 表现不如支持向量机或者神经网络
+*   GBDT 在处理文本分类特征问题上，相对其他模型的优势不如它在处理数值型特征时明显
+*   训练过程需要串行训练，只能在决策树内部采用一些局部的手段提高训练速度
+
+关于 GBDT 的理论和细节， 先到这里， 更详细的可以参考下面的第三个链接，这里就先不都整理过来了， 有了上面的 GBDT 的这些知识， 对于了解推荐系统里面的 GBDT+LR 模型， 或者 GBDT+FM 模型就比较轻松了， 对于了解 XGBOOST 和 Lightgbm 应该也会比较轻松了。
+
+铺垫已经完成， 下一个就要一睹 GBDT+LR 模型的真容了 😉
+
+**参考**：
+
+*   李航老师 – 《统计学习方法》
+*   西瓜书第八章 - 集成学习
+*   [机器学习算法 GBDT — 比较详细的一篇](https://www.cnblogs.com/bnuvincent/p/9693190.html)
+*   [GBDT 的原理和应用](https://zhuanlan.zhihu.com/p/30339807)
+*   [梯度提升树 (GBDT) 原理小结](https://www.cnblogs.com/pinard/p/6140514.html)
+*   [B 站上一个讲集成学习的视频感觉也不错](https://www.bilibili.com/video/BV1Ca4y1t7DS?t=11&p=9)
+*   [白话机器学习算法理论 + 实战之决策树](https://blog.csdn.net/wuzhongqiang/article/details/104154654)
+*   [白话机器学习算法理论 + 实战番外篇之 Xgboost](https://blog.csdn.net/wuzhongqiang/article/details/104854890)
+*   [白话机器学习算法理论 + 实战番外篇之 LightGBM](https://blog.csdn.net/wuzhongqiang/article/details/105350579)
+*   [白话机器学习算法理论 + 实战之 AdaBoost 算法](https://blog.csdn.net/wuzhongqiang/article/details/104245152)
+*   [为何常规的 gbdt 和决策树不适用于高基数特征的场景](https://zhuanlan.zhihu.com/p/85353086)
+
+这里依然是画几个重点
+
+**梯度提升和梯度下降的区别**
+
+GBDT 使用梯度提升作为训练方法， 而逻辑回归或者神经网络在训练过程中往往采用的是梯度下降作为训练方法， 二者有什么区别吗或者联系吗？
+
+*   同： 两者都是在每一轮的迭代中，利用损失函数相对于模型的负梯度方向的信息来对当前模型进行更新
+*   异： 在梯度下降中，模型是以参数化形式表示， 从而模型的更新等价于参数的更新， 而在梯度提升中，模型并不需要进行参数化表示，而是直接定义在函数空间中，从而大大扩展了可以使用的模型种类。
+
+![](https://img-blog.csdnimg.cn/20210331213102520.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3d1emhvbmdxaWFuZw==,size_1,color_FFFFFF,t_70#pic_center)
+
+**GBDT 在什么情况下比逻辑回归算法差？**  
+高维稀疏的数据集，gbdt 对维度超高的稀疏数据集，其正则项约束基本没用，并且决策空间会变成太多零散的决策小空间，具体可见上 gbdt 为何不好处理高基数类别特征的问题。
+
+而 lr 的 l 1 l1 l1 正则项可以很好的约束没啥用 的稀疏特征，直接 w 置 0 即可。
+
+**GBDT 对输入数据有什么要求，如果效果比较差，可能是什么原因造成的？**
+
+*   如果训练集的效果很差，说明原始数据相对于 gbdt 算法来说实在太差了，特征基本没什么区分度，xgb 这种拟合能力超强的算法都无法很好的拟合；
+*   如果训练集的效果很好测试集很差，并且二者的差距非常大（比如 10 个点以上），考虑特征分布的问题，应该是有一些强特的分布在训练集和测试集上差异太大了。
+*   如果训练集效果很好，测试集稍差一点，二者差异并不是很大，考虑调参。
+
+**GBDT 为什么用 CART 回归树做基学习器？**  
+基于梯度提升算法的学习器叫做 GBM(Gradient Boosting Machine)。理论上，GBM 可以选择各种不同的学习算法作为基学习器。现实中，用得最多的基学习器是决策树。为什么梯度提升方法倾向于选择决策树（通常是 CART 树）作为基学习器呢？这与决策树算法自身的优点有很大的关系。
+
+*   决策树可以认为是 if-then 规则的集合，易于理解，可解释性强，预测速度快。
+*   同时，决策树算法相比于其他的算法需要更少的特征工程，比如可以不用做特征标准化，可以很好的处理字段缺失的数据，也可以不用关心特征间是否相互依赖等。
+*   决策树能够自动组合多个特征，它可以毫无压力地处理特征间的交互关系并且是非参数化的，因此你不必担心异常值或者数据是否线性可分（举个例子，决策树能轻松处理好类别 A 在某个特征维度 x 的末端，类别 B 在中间，然后类别 A 又出现在特征维度 x 前端的情况）。
+*   不过，单独使用决策树算法时，有容易过拟合缺点。所幸的是，通过各种方法，抑制决策树的复杂性，降低单颗决策树的拟合能力，再通过梯度提升的方法集成多个决策树，最终能够很好的解决过拟合的问题。
+
+由此可见，梯度提升方法和决策树学习算法可以互相取长补短，是一对完美的搭档。至于抑制单颗决策树的复杂度的方法有很多，比如限制树的最大深度、限制叶子节点的最少样本数量、限制节点分裂时的最少样本数量、吸收 bagging 的思想对训练样本采样（subsample），在学习单颗决策树时只使用一部分训练样本、借鉴随机森林的思路在学习单颗决策树时只采样一部分特征、在目标函数中添加正则项惩罚复杂的树结构等。
+
+**为何常规的 gbdt 和决策树不适用于高基数特征的场景**  
+![](https://img-blog.csdnimg.cn/20210402220622230.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3d1emhvbmdxaWFuZw==,size_1,color_FFFFFF,t_70#pic_center)  
+在不加限制的情况下，tree 会一直在高维的稀疏特征中生长，从而像左图这样一直分裂下去，当叶子节点的样本数量很小的时候，我们难以直接就根据叶子节点的输出来判定样本的类别或者是样本的回归标签值，举一个简单的例子，加入某个叶节点一共就 5 个样本，4 个正样本，1 个负样本，那么我们可以直接判定落在这个叶子节点上的样本是正样本的概率为 0.8 吗？答案是不能，统计值本身就是建立在大量样本的情况下才有效，少量样本的统计特征相对于全量数据的统计特征存在严重的偏差，在样本数量很小的情况下，概率值是没有意义的。
